@@ -1,6 +1,8 @@
 import sys
+import os
 import requests
 import base64
+import struct
 import fido2.cbor as cbor
 
 from authenticator import Authenticator
@@ -27,12 +29,17 @@ class Client:
         cred_creation_options['challenge'] = base64.urlsafe_b64decode(cred_creation_options['challenge'])
         cred_creation_options['user']['id'] = base64.urlsafe_b64decode(cred_creation_options['user']['id'])
 
+        cred_creation_options['extensions'] = {'hmacCreateSecret': True}
+
         # Create credential on the authenticator
         print("\nTouch your authenticator device now...\n")
 
-        attestation_object, client_data = self.authenticator.make_credential(
+        resp = self.authenticator.make_credential(
             cred_creation_options, pin=self.pin
         )
+
+        attestation_object = resp.attestation_object
+        client_data = resp.client_data
 
         # Register credential at the RP
         cred_id = str(base64.urlsafe_b64encode(attestation_object.auth_data.credential_data.credential_id), 'ascii').rstrip('=')
@@ -65,6 +72,9 @@ class Client:
         assertion_options = resp.json().get('publicKey')
         assertion_options['challenge'] = base64.b64decode(assertion_options['challenge'])
 
+        salt = os.urandom(32)
+        assertion_options['extensions']['hmacGetSecret'] = {'salt1': salt}
+
         if tx_attack:
             assertion_options['extensions']['txAuthSimple'] = tx_attack
 
@@ -74,18 +84,24 @@ class Client:
         # Generate assertion
         print("\nTouch your authenticator device now...\n")
 
-        assertions, client_data = self.authenticator.get_assertion(assertion_options, pin=self.pin)
-        assertion = assertions[0]  # just take the first assertion - it's only a poc
+        resp = self.authenticator.get_assertion(assertion_options, pin=self.pin)
+        assertion = resp.get_response(0)  # just take the first assertion - it's only a poc
 
-        cred_id = str(base64.urlsafe_b64encode(assertion.credential['id']), 'ascii').rstrip('=')
-        auth_data = assertion.data[assertion.KEY.AUTH_DATA]
-        signature = assertion.data[assertion.KEY.SIGNATURE]
+        cred_id = str(base64.urlsafe_b64encode(assertion['credentialId']), 'ascii').rstrip('=')
+
+        ad = assertion['authenticatorData']
+        auth_data = ad.rp_id_hash \
+            + struct.pack(">BI", ad.flags, ad.counter) \
+            + (cbor.encode(ad.extensions) if ad.extensions is not None else b"")
+
+        signature = assertion['signature']
+
         payload = {
             'id': cred_id,
             'rawId': cred_id,
             'response': {
                 'authenticatorData': str(base64.urlsafe_b64encode(auth_data), 'ascii').rstrip('='),
-                'clientDataJSON': client_data.b64,
+                'clientDataJSON': assertion['clientData'].b64,
                 'signature': str(base64.urlsafe_b64encode(signature), 'ascii').rstrip('='),
                 'userHandle': ''
             },
@@ -99,5 +115,5 @@ class Client:
             sys.exit(1)
 
         print("Transaction authorized!")
-        print("CLIENT DATA:", client_data)
+        print("CLIENT DATA:", assertion['clientData'])
         print("ASSERTION DATA:", assertion)

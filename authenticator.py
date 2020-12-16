@@ -1,5 +1,5 @@
-from fido2.hid import CtapHidDevice
-from fido2.client import Fido2Client
+from yubico.fido2.hid import CtapHidDevice
+from yubico.fido2.client import Fido2Client
 import sys
 
 
